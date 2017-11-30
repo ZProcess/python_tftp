@@ -4,6 +4,7 @@
 import socket
 import pickle
 import sys,os
+import threading,time
 tftp_opcode={
 	"RRQ":1,
 	"WRQ":2,
@@ -30,6 +31,9 @@ class tftp_client():
 
 		self.file_name=None
 		self.fh=None
+		self.file_size=0
+		self.totle_send=0
+		self.t=None
 
 		self.current_block_numb=0
 		self.next_block_numb=1
@@ -42,18 +46,18 @@ class tftp_client():
 		self.is_last=False
 		self.error_numb=None
 
+	def cal_file_remainder(self):
+		while (self.totle_send==0 and self.file_size==0) or self.totle_send<=self.file_size:
+			self.totle_send=self.current_block_numb*512
+			print("Progress: {0} %".format(round(self.totle_send/self.file_size*100)),end='\r')
+			time.sleep(1)
 
 	def ntoh(self,package):
 		return pickle.loads(package)
 		
-
-
-
 	def hton(self,package):
 		return pickle.dumps(package)
 	
-
-
 	def assemble_package(self,*agrv):
 		result=[]
 		for n in agrv:
@@ -73,7 +77,7 @@ class tftp_client():
 
 	def send_error(self,error_numb):
 		erro_package=self.assemble_package(tftp_opcode['ERROR'],error_numb,tftp_error[error_numb])
-		erro_package=self.ntoh(erro_package)
+		erro_package=self.hton(erro_package)
 		self.sc.sendto(erro_package,self.server_addr)
 
 	def send_rrq(self,file_name):
@@ -84,7 +88,6 @@ class tftp_client():
 	def send_wrq(self,file_name):
 		wrq_package=self.assemble_package(tftp_opcode['WRQ'],file_name)
 		wrq_package=self.hton(wrq_package)
-		print("wrq_package type is ", type(wrq_package))
 		self.sc.sendto(wrq_package,self.server_addr)
 		
 
@@ -96,8 +99,6 @@ class tftp_client():
 
 	def deal_ack(self):
 		if not self.is_last:
-			print("I have recv the ack block : %s"%self.current_block_numb)
-			print("Now I will send the block: %d"%self.next_block_numb)
 			if self.next_block_numb==self.current_block_numb+1:
 				self.read_file()
 				self.send_data()
@@ -105,38 +106,41 @@ class tftp_client():
 				self.next_block_numb=current_block_numb+1
 				self.send_data()
 		else:
+			self.t.join()
+			print("finished")
 			self.fh.close()
 
 	def deal_data(self):
-		print("Recv data block: %s"%self.next_block_numb)
-		print("your last block: %s"%self.current_block_numb)
 		if self.next_block_numb==self.current_block_numb+1:			
 			self.fh.write(self.current_data)
 			self.fh.flush()
 			self.current_block_numb+=1
 			self.send_ack()
 		else:
-
 			self.send_ack()
 
 
 	def deal_rrq(self):
 		try:
 			self.fh=open(self.file_name,'rb')
-			self.send_wrq(self.file_name)
+			self.file_size=os.path.getsize(self.file_name)
+			self.t=threading.Thread(target=self.cal_file_remainder)
+			self.t.start()
 		except IOError:
 			self.fh.close()
 			self.send_error(1)
 
 	def deal_wrq(self):
 		try:
-			self.file_name=self.file_name[:-6]+'new.pdf'
+			file_split=os.path.split(self.file_name)
+			file_type=os.path.splitext(self.file_name)
+			file_name='new'+str(file_type[1])
+			self.file_name=os.path.join(file_split[0],file_name)
 			self.fh=open(self.file_name,'wb')
-			print("Created new file: %s"%self.file_name)
 			self.send_ack()
 		except IOError:
-			self.fh.close()
 			self.send_error(6)
+
 
 
 	def deal_error(self):
@@ -168,25 +172,23 @@ server_addr=('127.0.0.1',5000)
 client=tftp_client(server_addr)
 
 your_request=input('read(r) or write(w)')
-the_file=input("Please write the file name: ")
-
 
 if your_request == 'r':
+	the_file=input("Please write the file name: ")
 	client.send_rrq(the_file)
-
 elif your_request == 'w':
+	the_file=input("Please write the file name: ")
 	client.file_name=the_file
-	client.fh=open(client.file_name,'rb')
+	client.deal_rrq()
 	client.send_wrq(the_file)
 elif your_request == 'q':
 	sys.exit()
 
-nb=1
+
 while True:
 	server_request=client.sc.recv(1024)
 	client.deal_request(server_request)
-	print("the %d time recv data"%nb)
-	nb+=1
+
 
 
 
